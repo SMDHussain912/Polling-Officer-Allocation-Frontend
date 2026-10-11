@@ -1136,6 +1136,33 @@ a { color: var(--primary); text-decoration: none; }
 .idcard-sign { text-align: right; margin-top: 8px; font-weight: 700; }
 .idcard-footer { background: var(--card-navy, #0f2a5c); color: #fff; padding: 8px 12px; font-size: 11px; }
 
+/* ---- On-screen API debug badge (?debug=1 / dev only) ---- */
+.api-debug-badge {
+  position: fixed;
+  left: 12px;
+  bottom: 12px;
+  z-index: 9999;
+  max-width: 420px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #0f172a;
+  background: #ecfeff;
+  border: 1px solid #67e8f9;
+  box-shadow: 0 6px 24px rgba(2, 32, 71, 0.18);
+}
+.api-debug-badge.ok { background: #ecfdf5; border-color: #6ee7b7; }
+.api-debug-badge.bad { background: #fff1f2; border-color: #fda4af; }
+.api-debug-badge code {
+  background: rgba(15, 23, 42, 0.06);
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 11px;
+}
+.api-debug-host { color: #475569; margin-top: 2px; }
+.api-debug-warn { margin-top: 6px; color: #9f1239; font-weight: 500; }
+
 /* ---- ID Card drag-and-drop canvas ---- */
 .idcard-canvas {
   position: relative;

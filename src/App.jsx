@@ -16,6 +16,7 @@ import Notifications from './pages/Notifications';
 import NotificationSettings from './pages/NotificationSettings';
 import IdCardDesigner from './pages/IdCardDesigner';
 import Reports from './pages/Reports';
+import ApiDebugBadge from './components/ApiDebugBadge';
 
 function ProtectedRoute({ children }) {
   const { isAuthenticated } = useAuth();
@@ -31,7 +32,9 @@ export default function App() {
   }, [location.pathname]);
 
   return (
-    <Routes>
+    <>
+      <ApiDebugBadge />
+      <Routes>
       <Route path="/login" element={<Login />} />
       <Route path="/register" element={<Register />} />
       {/* Public visitors land on the employee registration page; the admin
@@ -69,6 +72,7 @@ export default function App() {
           </ProtectedRoute>
         }
       />
-    </Routes>
+      </Routes>
+    </>
   );
 }
