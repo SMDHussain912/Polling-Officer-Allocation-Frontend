@@ -1,0 +1,74 @@
+﻿import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
+import { useState, useEffect } from 'react';
+import { useAuth } from './context/AuthContext';
+
+import Navbar from './components/Navbar';
+import Sidebar from './components/Sidebar';
+
+import Login from './pages/Login';
+import Register from './pages/Register';
+import Dashboard from './pages/Dashboard';
+import Officers from './pages/Officers';
+import Booths from './pages/Booths';
+import UploadExcel from './pages/UploadExcel';
+import Allocation from './pages/Allocation';
+import Notifications from './pages/Notifications';
+import NotificationSettings from './pages/NotificationSettings';
+import IdCardDesigner from './pages/IdCardDesigner';
+import Reports from './pages/Reports';
+
+function ProtectedRoute({ children }) {
+  const { isAuthenticated } = useAuth();
+  if (isAuthenticated) return children;
+  return <Navigate to="/login" replace />;
+}
+
+export default function App() {
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const location = useLocation();
+  useEffect(() => {
+    setSidebarOpen(false);
+  }, [location.pathname]);
+
+  return (
+    <Routes>
+      <Route path="/login" element={<Login />} />
+      <Route path="/register" element={<Register />} />
+      {/* Public visitors land on the employee registration page; the admin
+          login page stays reachable via the link shown there. */}
+      <Route path="/" element={<Navigate to="/register" replace />} />
+      <Route
+        path="/*"
+        element={
+          <ProtectedRoute>
+
+            <div className="app-layout">
+              <Sidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
+              <div className="app-right">
+                <Navbar onMenuClick={() => setSidebarOpen(true)} />
+                <main className="app-main">
+                  <Routes>
+                    <Route path="/dashboard" element={<Dashboard />} />
+                    <Route path="/officers" element={<Officers />} />
+                    <Route path="/booths" element={<Booths />} />
+                    <Route path="/upload" element={<UploadExcel />} />
+                    <Route path="/allocation" element={<Allocation />} />
+                    <Route path="/notifications" element={<Notifications />} />
+                    <Route path="/settings/notifications" element={<NotificationSettings />} />
+                    <Route path="/settings/idcard" element={<IdCardDesigner />} />
+                    <Route path="/reports" element={<Reports />} />
+                    <Route path="/" element={<Navigate to="/dashboard" replace />} />
+                    <Route path="*" element={<Navigate to="/dashboard" replace />} />
+                  </Routes>
+                </main>
+                <footer className="app-footer">
+                  Smart Polling Booth Officer Allocation &amp; Notification System
+                </footer>
+              </div>
+            </div>
+          </ProtectedRoute>
+        }
+      />
+    </Routes>
+  );
+}

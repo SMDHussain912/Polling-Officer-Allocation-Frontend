@@ -1,0 +1,209 @@
+import Badge from './Badge';
+import { addressCompatibilityLabel, localityLine } from './addressCompatibility';
+function formatDate(value) {
+  if (!value) return '—';
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return '—';
+  const dd = String(d.getDate()).padStart(2, '0');
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const yyyy = d.getFullYear();
+  return `${dd}-${mm}-${yyyy}`;
+}
+
+export default function AllocationTable({
+  allocations = [],
+  loading,
+  onReallocate,
+  onCancel,
+  onSendNotification,
+  onSendMail,
+  onDownloadIdCard,
+  sendingIds = new Set(),
+  mailingIds = new Set(),
+}) {
+  if (loading) {
+    return <p className="empty-state">Loading allocations…</p>;
+  }
+  if (!allocations.length) {
+    return <p className="empty-state">
+      No allocations found. Run the allocation algorithm to begin.
+    </p>;
+  }
+
+  const showActions =
+    Boolean(onReallocate) ||
+    Boolean(onCancel) ||
+    Boolean(onSendNotification) ||
+    Boolean(onSendMail) ||
+    Boolean(onDownloadIdCard);
+
+  return (
+    <div className="table-wrap">
+      <table className="table table-allocations">
+        <thead>
+          <tr>
+            <th>S.No</th>
+            <th>Officer ID</th>
+            <th>Officer Name</th>
+            <th>Designation</th>
+            <th>Mobile</th>
+            <th>Email</th>
+            <th>Mandal</th>
+            <th>Officer Locality</th>
+            <th>Booth No.</th>
+            <th>Booth Name</th>
+            <th>Building</th>
+            <th>Booth Locality</th>
+            <th>Status</th>
+            <th>Allocation Date</th>
+            <th>Address Compatibility</th>
+            {showActions ? <th className="col-actions">Actions</th> : null}
+          </tr>
+        </thead>
+        <tbody>
+          {allocations.map((a, index) => {
+            const compatibility = addressCompatibilityLabel(a);
+            const active = a.status === 'ALLOCATED';
+            const email = String(a.officer?.email || '').trim();
+            return (
+              <tr key={a._id}>
+                <td className="mono">{index + 1}</td>
+                <td>
+                  <span className="mono">{a.officer?.officerId || '—'}</span>
+                </td>
+                <td>{a.officer?.officerName || '—'}</td>
+                <td>{a.officer?.designation || '—'}</td>
+                <td className="mono">{a.officer?.mobileNumber || '—'}</td>
+                <td>
+                  {email ? <span className="mono">{email}</span> : <span className="muted">—</span>}
+                </td>
+                <td>{a.mandal || a.officer?.mandal || '—'}</td>
+                <td>{localityLine(a.officer)}</td>
+                <td className="mono">{a.booth?.boothNumber || '—'}</td>
+                <td>{a.booth?.boothName || '—'}</td>
+                <td>{a.booth?.buildingName || '—'}</td>
+                <td>{localityLine(a.booth)}</td>
+                <td>
+                  <Badge tone={active ? 'green' : a.status === 'CANCELLED' ? 'red' : 'amber'}>{a.status}</Badge>
+                </td>
+                <td className="mono">{formatDate(a.allocationDate || a.createdAt)}</td>
+                <td>
+                  <Badge tone={compatibility.tone}>
+                    {compatibility.label}
+                  </Badge>
+                </td>
+                {showActions ? (
+                  <td className="col-actions">
+                    <div className="row-actions row-actions-wrap">
+                      {active ? (
+                        <>
+                          {onReallocate ? (
+                            <button
+                              type="button"
+                              className="btn btn-ghost btn-xs"
+                              onClick={() => onReallocate(a)}
+                            >
+                              Reallocate
+                            </button>
+                          ) : null}
+                          {onCancel ? (
+                            <button
+                              type="button"
+                              className="btn btn-danger btn-xs"
+                              onClick={() => onCancel(a)}
+                            >
+                              Cancel
+                            </button>
+                          ) : null}
+                          {onSendNotification ? (
+                            <>
+                              <button
+                                type="button"
+                                className="btn btn-primary btn-xs"
+                                disabled={sendingIds.has(a._id)}
+                                title="Send SMS + WhatsApp + Email together"
+                                onClick={() => onSendNotification(a)}
+                              >
+                                {sendingIds.has(a._id) ? 'Sending…' : 'Notify All'}
+                              </button>
+                              <button
+                                type="button"
+                                className="btn btn-ghost btn-xs"
+                                disabled={sendingIds.has(`sms:${a._id}`)}
+                                title={a.officer?.mobileNumber ? `Send SMS to ${a.officer.mobileNumber}` : 'No mobile number'}
+                                onClick={() => onSendNotification(a, ['sms'])}
+                              >
+                                {sendingIds.has(`sms:${a._id}`) ? 'SMS…' : 'SMS'}
+                              </button>
+                              <button
+                                type="button"
+                                className="btn btn-ghost btn-xs"
+                                disabled={sendingIds.has(`whatsapp:${a._id}`)}
+                                title={a.officer?.mobileNumber ? `Send WhatsApp to ${a.officer.mobileNumber}` : 'No mobile number'}
+                                onClick={() => onSendNotification(a, ['whatsapp'])}
+                              >
+                                {sendingIds.has(`whatsapp:${a._id}`) ? 'WA…' : 'WhatsApp'}
+                              </button>
+                            </>
+                          ) : null}
+                          {onSendMail ? (
+                            <button
+                              type="button"
+                              className="btn btn-secondary btn-xs"
+                              disabled={!email || mailingIds.has(a._id)}
+                              title={
+                                email
+                                  ? `E-mail the ID card download link to ${email}`
+                                  : 'This officer has no e-mail address - add one on the Officers page'
+                              }
+                              onClick={() => onSendMail(a)}
+                            >
+                              {mailingIds.has(a._id) ? 'Mailing…' : 'Send Mail'}
+                            </button>
+                          ) : null}
+                          {onDownloadIdCard ? (
+                            <>
+                              <button
+                                type="button"
+                                className="btn btn-ghost btn-xs"
+                                title="Download the generated Polling Duty ID card (PDF)"
+                                onClick={() => onDownloadIdCard(a)}
+                              >
+                                ID Card
+                              </button>
+                              {a.idCard?.issued ? (
+                                a.idCard.receivedAt ? (
+                                  <span
+                                    title={`Downloaded ${new Date(
+                                      a.idCard.receivedAt
+                                    ).toLocaleString()}${
+                                      (a.idCard.downloadCount || 0) > 1
+                                        ? ` · ${a.idCard.downloadCount} downloads`
+                                        : ''
+                                    }`}
+                                  >
+                                    <Badge tone="green">Received</Badge>
+                                  </span>
+                                ) : (
+                                  <span title="ID card issued - officer has not opened the download link yet">
+                                    <Badge tone="amber">Not received</Badge>
+                                  </span>
+                                )
+                              ) : null}
+                            </>
+                          ) : null}
+                        </>
+                      ) : (
+                        <span className="muted">—</span>
+                      )}
+                    </div>
+                  </td>
+                ) : null}
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}

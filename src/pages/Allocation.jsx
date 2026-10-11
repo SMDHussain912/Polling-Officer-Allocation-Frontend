@@ -1,0 +1,667 @@
+import { useEffect, useState, useCallback, useMemo } from 'react';
+import api, { getErrorMessage } from '../services/api';
+import AllocationTable from '../components/AllocationTable';
+import BoothWiseAllocation from '../components/BoothWiseAllocation';
+import MandalWiseAllocation from '../components/MandalWiseAllocation';
+import ManualAllocateModal from '../components/ManualAllocateModal';
+import ReallocateModal from '../components/ReallocateModal';
+import StatCard from '../components/StatCard';
+import Spinner from '../components/Spinner';
+import Toast from '../components/Toast';
+import ConfirmModal from '../components/ConfirmModal';
+import { docDownload } from '../services/download';
+import { compareOfficerIds, compareAllocationsByOfficerId } from '../utils/naturalSort';
+
+const TABS = [
+  { id: 'mandal', label: 'Mandal-wise Allocation' },
+  { id: 'allocated', label: 'Allocated Officers' },
+  { id: 'unallocated', label: 'Unallocated Officers' },
+  { id: 'boothwise', label: 'Booth-wise Allocation' },
+  { id: 'history', label: 'Allocation History' },
+];
+
+function successRate(allocated, totalOfficers) {
+  if (!totalOfficers) return '0.00%';
+  return `${((allocated / totalOfficers) * 100).toFixed(2)}%`;
+}
+
+export default function Allocation() {
+  const [loading, setLoading] = useState(true);
+  const [loadingStage, setLoadingStage] = useState('Loading uploaded officers...');
+  const [running, setRunning] = useState(false);
+  const [runLabel, setRunLabel] = useState('');
+  const [notify, setNotify] = useState(null);
+
+  const [stats, setStats] = useState(null);
+  const [officers, setOfficers] = useState([]);
+  const [booths, setBooths] = useState([]);
+  const [allocations, setAllocations] = useState([]);
+  const [runResult, setRunResult] = useState(null);
+
+  const [tab, setTab] = useState('mandal');
+  const [historySearch, setHistorySearch] = useState('');
+  const [historyStatus, setHistoryStatus] = useState('');
+
+  const [confirmRun, setConfirmRun] = useState(false);
+  const [manualOpen, setManualOpen] = useState(false);
+  const [cancelTarget, setCancelTarget] = useState(null);
+  const [cancelling, setCancelling] = useState(false);
+  const [reallocTarget, setReallocTarget] = useState(null);
+  const [sendingIds, setSendingIds] = useState(new Set());
+  const [mailingIds, setMailingIds] = useState(new Set());
+  const [confirmMailAll, setConfirmMailAll] = useState(false);
+  const [mailingAll, setMailingAll] = useState(false);
+  const [confirmNotifyAll, setConfirmNotifyAll] = useState(false);
+  const [notifyingAll, setNotifyingAll] = useState(false);
+
+  const allocatedList = useMemo(
+    () => allocations
+      .filter((a) => a.status === 'ALLOCATED')
+      .sort(compareAllocationsByOfficerId),
+    [allocations]
+  );
+  const unallocatedList = useMemo(() => {
+    const allocatedOfficerIds = new Set(
+      allocatedList.map((a) => String(a.officer?._id || a.officer))
+    );
+    const reasonById = new Map(
+      (runResult?.unallocatedOfficers || []).map((u) => [
+        String(u.officerId || u._id || u.officer?._id),
+        u.reason,
+      ])
+    );
+    return officers
+      .filter((o) => !allocatedOfficerIds.has(String(o._id)))
+      .map((o) => ({
+        ...o,
+        unallocatedReason:
+          reasonById.get(String(o.officerId)) ||
+          reasonById.get(String(o._id)) ||
+          'No suitable booth available in the same Mandal.',
+      }))
+      .sort((a, b) => compareOfficerIds(a.officerId, b.officerId));
+  }, [officers, allocatedList, runResult]);
+
+  const allocationsByBooth = useMemo(() => {
+    const map = {};
+    allocatedList.forEach((a) => {
+      const key = String(a.booth?._id || a.booth);
+      if (!map[key]) map[key] = [];
+      map[key].push(a);
+    });
+    // Inside EVERY booth the officers are sorted by numeric Officer ID ascending.
+    Object.values(map).forEach((list) => list.sort(compareAllocationsByOfficerId));
+    return map;
+  }, [allocatedList]);
+
+  // STEP 1 + STEP 6: group every officer and every booth by Mandal (never mixed).
+  const mandalGroups = useMemo(() => {
+    const keyOf = (v) => String(v || '').trim().toLowerCase();
+    const map = new Map();
+    const seed = (name) => {
+      const k = keyOf(name);
+      if (!map.has(k)) {
+        map.set(k, {
+          key: k,
+          mandalName: String(name || '').trim() || 'Unspecified',
+          officers: [],
+          booths: [],
+          allocated: [],
+        });
+      }
+      return map.get(k);
+    };
+    officers.forEach((o) => seed(o.mandal).officers.push(o));
+    booths.forEach((b) => seed(b.mandal).booths.push(b));
+    allocatedList.forEach((a) => {
+      const name = a.officer?.mandal || a.booth?.mandal || a.mandal;
+      if (name) seed(name).allocated.push(a);
+    });
+    // Inside EVERY Mandal the officers are sorted by numeric Officer ID ascending,
+    // while Mandal sections themselves are sorted by name ascending.
+    [...map.values()].forEach((g) => g.allocated.sort(compareAllocationsByOfficerId));
+    return [...map.values()].sort((a, b) => a.mandalName.localeCompare(b.mandalName));
+  }, [officers, booths, allocatedList]);
+
+  const historyList = useMemo(() => {
+    const q = historySearch.trim().toLowerCase();
+    return allocations.filter((a) => {
+      if (historyStatus && a.status !== historyStatus) return false;
+      if (!q) return true;
+      const hay = [
+        a.officer?.officerId,
+        a.officer?.officerName,
+        a.officer?.mobileNumber,
+        a.booth?.boothNumber,
+        a.booth?.boothName,
+        a.mandal,
+        a.status,
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+      return hay.includes(q);
+    })
+    .sort(compareAllocationsByOfficerId);
+  }, [allocations, historySearch, historyStatus]);
+
+  const totalRequiredSlots = useMemo(
+    () => booths.reduce((sum, b) => sum + (b.requiredOfficers || 0), 0),
+    [booths]
+  );
+
+  const fetchAll = useCallback(async (stageLabel) => {
+    setLoading(true);
+    setLoadingStage(stageLabel || 'Loading uploaded officers...');
+    try {
+      setLoadingStage('Loading uploaded officers...');
+      const officersRes = await api.get('/api/officers', { params: { limit: 500 } });
+      setOfficers(officersRes.data.data || []);
+      setLoadingStage('Loading uploaded booths...');
+      const boothsRes = await api.get('/api/booths', { params: { limit: 500 } });
+      setBooths(boothsRes.data.data || []);
+      setLoadingStage('Loading existing allocations...');
+      const [allocRes, statsRes] = await Promise.all([
+        api.get('/api/allocation', { params: { limit: 500 } }),
+        api.get('/api/dashboard/stats'),
+      ]);
+      setAllocations(allocRes.data.data || []);
+      setStats(statsRes.data.data || null);
+    } catch (err) {
+      setNotify({ message: getErrorMessage(err), type: 'error' });
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchAll().catch(() => {});
+  }, [fetchAll]);
+  const doRun = async () => {
+    setRunning(true);
+    setConfirmRun(false);
+    setRunLabel('Running allocation...');
+    try {
+      const { data } = await api.post('/api/allocation/run');
+      setRunLabel('Saving allocation results...');
+      setRunResult(data.data || null);
+      setNotify({
+        message:
+          `Allocation completed across ${data.data?.totalMandals ?? 0} Mandal(s): ` +
+          `${data.data?.allocated ?? 0} allocated, ` +
+          `${data.data?.unallocated ?? 0} unallocated, ${data.data?.skipped ?? 0} already allocated.`,
+        type: 'success',
+        duration: 8000,
+      });
+      setTab('mandal');
+      await fetchAll('Refreshing allocation results...');
+    } catch (err) {
+      setNotify({ message: getErrorMessage(err), type: 'error', duration: 8000 });
+      setRunning(false);
+      return;
+    } finally {
+      setRunning(false);
+      setRunLabel('');
+    }
+  };
+  const doCancel = async () => {
+    if (!cancelTarget) return;
+    setCancelling(true);
+    try {
+      await api.post(`/api/allocation/${cancelTarget._id}/cancel`);
+      setNotify({
+        message: `Allocation cancelled - officer ${cancelTarget.officer?.officerName || ''} is now unallocated.`,
+        type: 'success',
+      });
+      setCancelTarget(null);
+      await fetchAll('Refreshing allocation data...');
+    } catch (err) {
+      setNotify({ message: getErrorMessage(err), type: 'error', duration: 8000 });
+      setCancelTarget(null);
+    } finally {
+      setCancelling(false);
+    }
+  };
+  const doSendNotification = async (allocation, channels) => {
+    const key = channels ? `${channels.join('+')}:${allocation._id}` : allocation._id;
+    setSendingIds((prev) => new Set(prev).add(key).add(allocation._id));
+    try {
+      const { data } = await api.post(`/api/notifications/send/${allocation._id}`, {
+        channels: channels || ['sms', 'whatsapp', 'email'],
+        idempotencyKey: `${Date.now()}`,
+      });
+      setNotify({
+        message: data.message || 'Notifications sent.',
+        type: 'success',
+      });
+    } catch (err) {
+      setNotify({ message: getErrorMessage(err), type: 'error', duration: 8000 });
+    } finally {
+      setSendingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(key);
+        next.delete(allocation._id);
+        return next;
+      });
+    }
+  };
+
+  /**
+   * E-mails the SHORT allocation mail for ONE allocation (the "Send Mail"
+   * button in the Allocated Officers table): "allocated to <Mandal> mandal"
+   * plus the tokenised ID-card download link. The mail is composed on the
+   * server from the allocation data, so nothing has to be typed here.
+   */
+  const doSendMail = async (allocation) => {
+    setMailingIds((prev) => new Set(prev).add(allocation._id));
+    try {
+      const { data } = await api.post(`/api/mail/allocation/${allocation._id}`);
+      setNotify({
+        message: data.message || `E-mail sent to ${allocation.officer?.email || 'the officer'}`,
+        type: 'success',
+      });
+    } catch (err) {
+      setNotify({ message: getErrorMessage(err), type: 'error', duration: 8000 });
+    } finally {
+      setMailingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(allocation._id);
+        return next;
+      });
+    }
+  };
+
+  /**
+   * Downloads/opens the officer's generated Polling Duty ID card (PDF). The
+   * card is rendered server-side (pdfkit) from the allocation data and cached,
+   * so this works for every ALLOCATED officer — even before any mail or SMS
+   * was sent. Uses the shared download helper (session-cookie auth).
+   */
+  const doDownloadIdCard = async (allocation) => {
+    await docDownload(
+      `/api/idcards/allocation/${allocation._id}`,
+      `ID-Card-${allocation.officer?.officerId || 'officer'}.pdf`
+    );
+  };
+
+  /**
+   * Bulk variant: e-mails every allocated officer that has an e-mail address
+   * in a single request. Officers without an address are reported as skipped
+   * by the API, so the summary always explains what happened.
+   */
+  const doMailAll = async () => {
+    setMailingAll(true);
+    try {
+      const { data } = await api.post('/api/mail/allocation', {
+        allocationIds: allocatedList.map((a) => a._id),
+        limit: 100,
+      });
+      setNotify({
+        message: data.message || 'ID-card link mails processed.',
+        type: data.success ? 'success' : 'error',
+        duration: 8000,
+      });
+    } catch (err) {
+      setNotify({ message: getErrorMessage(err), type: 'error', duration: 8000 });
+    } finally {
+      setMailingAll(false);
+      setConfirmMailAll(false);
+    }
+  };
+
+  /**
+   * Bulk SMS: sends the polling-duty notification to every allocated officer
+   * in a single request (the "Notify All" button). Officers without a mobile
+   * number are reported as skipped by the API.
+   */
+  const doNotifyAll = async () => {
+    setNotifyingAll(true);
+    try {
+      const { data } = await api.post('/api/notifications/send-all', {
+        allocationIds: allocatedList.map((a) => a._id),
+        limit: 100,
+      });
+      setNotify({
+        message: data.message || 'Notifications processed.',
+        type: data.success ? 'success' : 'error',
+        duration: 8000,
+      });
+      await fetchAll('Refreshing notification data...');
+    } catch (err) {
+      setNotify({ message: getErrorMessage(err), type: 'error', duration: 8000 });
+    } finally {
+      setNotifyingAll(false);
+      setConfirmNotifyAll(false);
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="page">
+        <Spinner label={loadingStage || 'Loading allocation data...'} />
+      </div>
+    );
+  }
+
+  return (
+    <div className="page">
+      {notify ? <Toast {...notify} onClose={() => setNotify(null)} /> : null}
+      {running ? <Spinner label={runLabel || 'Running allocation...'} /> : null}
+
+      <div className="page-head">
+        <div>
+          <h1 className="page-title">Allocation</h1>
+          <p className="page-subtitle">
+            Automatic booth allocation built from the uploaded Excel data
+          </p>
+        </div>
+        <div className="btn-row">
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={running}
+            onClick={() => setConfirmRun(true)}
+          >
+            {running ? 'Running...' : 'Run Automatic Allocation'}
+          </button>
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={running || unallocatedList.length === 0}
+            onClick={() => setManualOpen(true)}
+          >
+            Manual Allocate Officer
+          </button>
+          <button
+            type="button"
+            className="btn btn-ghost"
+            disabled={running}
+            onClick={() => fetchAll('Refreshing allocation data...')}
+          >
+            Refresh Data
+          </button>
+          <button
+            type="button"
+            className="btn btn-ghost"
+            onClick={() => docDownload('/api/reports/allocation-excel')}
+          >
+            Allocated (.xlsx)
+          </button>
+        </div>
+      </div>
+
+      <div className="stat-grid">
+        <StatCard label="Total Mandals" value={mandalGroups.length} tone="navy" />
+        <StatCard label="Total Officers" value={stats?.totalOfficers ?? officers.length} tone="blue" />
+        <StatCard label="Total Booths" value={stats?.totalBooths ?? booths.length} tone="blue" />
+        <StatCard label="Allocated Officers" value={allocatedList.length} tone="green" />
+        <StatCard label="Unallocated Officers" value={unallocatedList.length} tone="red" />
+        <StatCard label="Required Officer Slots" value={totalRequiredSlots} tone="purple" />
+        <StatCard
+          label="Available Booth Slots"
+          value={Math.max(0, totalRequiredSlots - allocatedList.length)}
+         
+          tone="amber"
+        />
+      </div>
+
+      {runResult ? (
+        <div className="card">
+          <h3 className="card-title">Allocation Summary</h3>
+          <div className="summary-grid">
+            <div><span className="muted">Total Officers:</span> <strong>{runResult.totalOfficers ?? 0}</strong></div>
+            <div><span className="muted">Successfully Allocated:</span> <strong>{runResult.allocated ?? 0}</strong></div>
+            <div><span className="muted">Unallocated:</span> <strong>{runResult.unallocated ?? 0}</strong></div>
+            <div><span className="muted">Already Allocated (skipped):</span> <strong>{runResult.skipped ?? 0}</strong></div>
+            <div><span className="muted">Mandals Processed:</span> <strong>{runResult.totalMandals ?? 0}</strong></div>
+            <div><span className="muted">Run Limit:</span> <strong>{runResult.runLimit ?? '∞ (Full Run - All Mandals)'}{runResult.limitReached ? ' - limit reached, run again' : ''}</strong></div>
+            <div><span className="muted">Total Booths:</span> <strong>{runResult.totalBooths ?? 0}</strong></div>
+            <div><span className="muted">Filled Slots:</span> <strong>{allocatedList.length}</strong></div>
+            <div><span className="muted">Available Slots:</span> <strong>{Math.max(0, totalRequiredSlots - allocatedList.length)}</strong></div>
+            <div><span className="muted">Cancelled Allocations:</span> <strong>{stats?.cancelledAllocations ?? 0}</strong></div>
+            <div>
+              <span className="muted">Success Rate:</span>{' '}
+              <strong>{successRate(runResult.allocated ?? 0, runResult.totalOfficers ?? 0)}</strong>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      <div className="tab-row">
+        {TABS.map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            className={`tab-btn ${tab === t.id ? 'active' : ''}`}
+            onClick={() => setTab(t.id)}
+          >
+            {t.label}
+            {t.id === 'mandal' ? ` (${mandalGroups.length})` : ''}
+            {t.id === 'allocated' ? ` (${allocatedList.length})` : ''}
+            {t.id === 'unallocated' ? ` (${unallocatedList.length})` : ''}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'mandal' ? (
+        <div className="page-section">
+          <p className="page-subtitle">
+            Every Mandal is shown in its own separate section - officers are never
+            allocated to booths of another Mandal.
+          </p>
+          <MandalWiseAllocation
+            groups={mandalGroups}
+            allocationsByBooth={allocationsByBooth}
+            unallocatedList={unallocatedList}
+          />
+        </div>
+      ) : null}
+
+      {tab === 'allocated' ? (
+        <div className="card">
+          <div className="card-head">
+            <h3 className="card-title">Allocated Officers</h3>
+            <div className="btn-row">
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                disabled={notifyingAll || allocatedList.length === 0}
+                title="Send the polling-duty SMS notification to every allocated officer"
+                onClick={() => setConfirmNotifyAll(true)}
+              >
+                {notifyingAll ? 'Notifying…' : 'Notify All Allocated'}
+              </button>
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                disabled={mailingAll || allocatedList.length === 0}
+                title="E-mail the polling-duty letter to every allocated officer that has an e-mail address"
+                onClick={() => setConfirmMailAll(true)}
+              >
+                {mailingAll ? 'Mailing…' : 'Mail All Allocated'}
+              </button>
+            </div>
+          </div>
+          {allocatedList.length === 0 ? (
+            <p className="empty-state">
+              No allocations yet. Click &quot;Run Automatic Allocation&quot; to allocate the
+              uploaded officers to booths.
+            </p>
+          ) : (
+            <AllocationTable
+              allocations={allocatedList}
+              onReallocate={(a) => setReallocTarget(a)}
+              onCancel={(a) => setCancelTarget(a)}
+              onSendNotification={doSendNotification}
+              onSendMail={doSendMail}
+              onDownloadIdCard={doDownloadIdCard}
+              sendingIds={sendingIds}
+              mailingIds={mailingIds}
+            />
+          )}
+        </div>
+      ) : null}
+
+      {tab === 'unallocated' ? (
+        <div className="card">
+          <h3 className="card-title">Unallocated Officers</h3>
+          <p className="page-subtitle">
+            These officers could not be allocated. They are never hidden.
+          </p>
+          {unallocatedList.length === 0 ? (
+            <p className="empty-state">All uploaded officers are allocated.</p>
+          ) : (
+            <div className="table-wrap">
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>S.No</th>
+                    <th>Officer ID</th>
+                    <th>Officer Name</th>
+                    <th>Designation</th>
+                    <th>Mobile Number</th>
+                    <th>Mandal</th>
+                    <th>Officer Locality</th>
+                    <th>Reason</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {unallocatedList.map((o, idx) => (
+                    <tr key={o._id}>
+                      <td>{idx + 1}</td>
+                      <td><span className="mono">{o.officerId}</span></td>
+                      <td>{o.officerName}</td>
+                      <td>{o.designation || '...'}</td>
+                      <td className="mono">{o.mobileNumber || '...'}</td>
+                      <td>{o.mandal || '...'}</td>
+                      <td>{o.locality || '...'}</td>
+                      <td><span className="inline-note">{o.unallocatedReason}</span></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      ) : null}
+
+      {tab === 'boothwise' ? (
+        <BoothWiseAllocation booths={booths} allocationsByBooth={allocationsByBooth} />
+      ) : null}
+
+      {tab === 'history' ? (
+        <div className="card">
+          <div className="toolbar">
+            <input
+              className="input"
+              placeholder="Search history..."
+              value={historySearch}
+              onChange={(e) => setHistorySearch(e.target.value)}
+            />
+            <select
+              className="input"
+              value={historyStatus}
+              onChange={(e) => setHistoryStatus(e.target.value)}
+            >
+              <option value="">All Statuses</option>
+              <option value="ALLOCATED">ALLOCATED</option>
+              <option value="CANCELLED">CANCELLED</option>
+              <option value="REALLOCATED">REALLOCATED</option>
+            </select>
+          </div>
+          {historyList.length === 0 ? (
+            <p className="empty-state">No allocation history matches the filter.</p>
+          ) : (
+            <div className="table-wrap">
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>S.No</th>
+                    <th>Officer ID</th>
+                    <th>Officer Name</th>
+                    <th>Booth No.</th>
+                    <th>Booth Name</th>
+                    <th>Status</th>
+                    <th>Allocation Date</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {historyList.map((a, idx) => (
+                    <tr key={a._id}>
+                      <td>{idx + 1}</td>
+                      <td><span className="mono">{a.officer?.officerId || '...'}</span></td>
+                      <td>{a.officer?.officerName || '...'}</td>
+                      <td className="mono">{a.booth?.boothNumber || '...'}</td>
+                      <td>{a.booth?.boothName || '...'}</td>
+                      <td>{a.status}</td>
+                      <td>
+                        {a.allocationDate
+                          ? new Date(a.allocationDate).toLocaleDateString('en-GB')
+                          : '...'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      ) : null}
+
+      <ConfirmModal
+        open={confirmRun}
+        title="Run Automatic Allocation"
+        message="This allocates every unallocated officer to suitable booths in their own Mandal (skipping same-locality and full booths). Already allocated officers are skipped. Continue?"
+        confirmLabel="Run Allocation"
+        loading={running}
+        onConfirm={doRun}
+        onCancel={() => setConfirmRun(false)}
+      />
+
+      <ConfirmModal
+        open={Boolean(cancelTarget)}
+        title="Cancel Allocation"
+        message={`Cancel the allocation of ${cancelTarget?.officer?.officerName || 'this officer'} at booth ${cancelTarget?.booth?.boothNumber || ''}? The officer becomes unallocated and the booth slot is freed. History is kept.`}
+        confirmLabel="Cancel Allocation"
+        tone="danger"
+        loading={cancelling}
+        onConfirm={doCancel}
+        onCancel={() => setCancelTarget(null)}
+      />
+
+      <ConfirmModal
+        open={confirmMailAll}
+        title="E-mail All Allocated Officers"
+        message={`E-mail the ID card download link to the ${allocatedList.length} allocated officer(s)? Each officer gets a short mail naming their Mandal plus the link to their Polling Duty ID card PDF. Officers without an e-mail address are skipped automatically (up to 100 per run, and Gmail must be connected).`}
+        confirmLabel="Send Mail"
+        loading={mailingAll}
+        onConfirm={doMailAll}
+        onCancel={() => setConfirmMailAll(false)}
+      />
+
+      <ConfirmModal
+        open={confirmNotifyAll}
+        title="Notify All Allocated Officers"
+        message={`Send SMS + WhatsApp + Email to the ${allocatedList.length} allocated officer(s)? Officers without a mobile number or email are skipped automatically (up to 100 per run). Each officer is messaged once — repeat clicks reuse the same record.`}
+        confirmLabel="Send Notifications"
+        loading={notifyingAll}
+        onConfirm={doNotifyAll}
+        onCancel={() => setConfirmNotifyAll(false)}
+      />
+
+      <ReallocateModal
+        allocation={reallocTarget}
+        onClose={() => setReallocTarget(null)}
+        onDone={fetchAll}
+      />
+
+      <ManualAllocateModal
+        open={manualOpen}
+        unallocatedOfficers={unallocatedList}
+        onClose={() => setManualOpen(false)}
+        onDone={fetchAll}
+      />
+    </div>
+  );
+}
+
