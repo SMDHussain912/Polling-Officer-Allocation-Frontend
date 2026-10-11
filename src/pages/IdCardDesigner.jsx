@@ -16,6 +16,14 @@ const CARD_W = 480;
 const CARD_H = 300;
 const MAX_ELEMENTS = 10;
 
+// Font choices must match the backend enum ['sans','serif','mono'] and the PDF
+// font mapping in idCardService (sans=Helvetica, serif=Times, mono=Courier).
+const FONT_FAMILIES = {
+  sans: { label: 'Clean (sans)', css: 'Helvetica, Arial, sans-serif' },
+  serif: { label: 'Official (serif)', css: 'Times New Roman, Georgia, serif' },
+  mono: { label: 'Typewriter (mono)', css: 'Courier New, monospace' },
+};
+
 const uid = () => Math.random().toString(36).slice(2, 9);
 
 export default function IdCardDesigner() {
@@ -108,9 +116,36 @@ export default function IdCardDesigner() {
     setSelectedId(null);
   };
 
+  // Duplicate a placed item (handy to reuse one signature/stamp in two spots).
+  const duplicateEl = (id) => {
+    setDesign((prev) => {
+      const els = [...(prev.elements || [])];
+      const i = els.findIndex((e) => e.id === id);
+      if (i < 0 || els.length >= MAX_ELEMENTS) return prev;
+      const copy = { ...els[i], id: uid(), x: Math.min(CARD_W - 10, els[i].x + 16), y: Math.min(CARD_H - 10, els[i].y + 16) };
+      els.splice(i + 1, 0, copy);
+      setSelectedId(copy.id);
+      return { ...prev, elements: els };
+    });
+  };
+
+  // Bring-to-front / send-to-back (z-order = array order, last renders on top).
+  const stackEl = (id, dir) => {
+    setDesign((prev) => {
+      const els = [...(prev.elements || [])];
+      const i = els.findIndex((e) => e.id === id);
+      const j = dir === 'front' ? els.length - 1 : 0;
+      if (i < 0 || i === j) return prev;
+      const [item] = els.splice(i, 1);
+      els.splice(j, 0, item);
+      return { ...prev, elements: els };
+    });
+  };
+
   const onPointerDown = (e, el) => {
     e.preventDefault();
     setSelectedId(el.id);
+    if (el.locked) return; // locked items can't be dragged (accidental-drag guard)
     const rect = canvasRef.current.getBoundingClientRect();
     const scale = rect.width / CARD_W;
     dragRef.current = { id: el.id, scale, offX: (e.clientX - rect.left) / scale - el.x, offY: (e.clientY - rect.top) / scale - el.y };
@@ -275,18 +310,51 @@ export default function IdCardDesigner() {
                       <label className="login-label" htmlFor="elColor" style={{ margin: 0 }}>Color</label>
                       <input id="elColor" type="color" value={selected.color || '#111111'} onChange={(e) => updateEl(selected.id, { color: e.target.value })} />
                       <label className="form-check"><input type="checkbox" checked={selected.fontWeight === 'bold'} onChange={(e) => updateEl(selected.id, { fontWeight: e.target.checked ? 'bold' : 'normal' })} /> Bold</label>
-                      <select className="input" style={{ width: 110 }} value={selected.align || 'left'} onChange={(e) => updateEl(selected.id, { align: e.target.value })}>
+                      <select className="input" style={{ width: 120 }} value={selected.align || 'left'} onChange={(e) => updateEl(selected.id, { align: e.target.value })} aria-label="Text alignment">
                         <option value="left">Left</option>
                         <option value="center">Center</option>
                         <option value="right">Right</option>
                       </select>
                     </div>
+                    <label className="login-label" htmlFor="elFont" style={{ marginTop: 8 }}>Font style</label>
+                    <select id="elFont" className="input" value={selected.fontFamily || 'sans'} onChange={(e) => updateEl(selected.id, { fontFamily: e.target.value })}>
+                      {Object.entries(FONT_FAMILIES).map(([id, f]) => (
+                        <option key={id} value={id}>{f.label}</option>
+                      ))}
+                    </select>
                   </>
                 ) : null}
                 <label className="login-label" htmlFor="elW" style={{ marginTop: 8 }}>Width: {selected.width}px</label>
                 <input id="elW" type="range" min="20" max="440" step="2" value={selected.width} onChange={(e) => updateEl(selected.id, { width: Number(e.target.value) })} />
                 <label className="login-label" htmlFor="elRot" style={{ marginTop: 8 }}>Rotation: {selected.rotation || 0}°</label>
                 <input id="elRot" type="range" min="-180" max="180" step="1" value={selected.rotation || 0} onChange={(e) => updateEl(selected.id, { rotation: Number(e.target.value) })} />
+                {selected.type === 'image' ? (
+                  <>
+                    <label className="login-label" htmlFor="elH" style={{ marginTop: 8 }}>Height: {selected.height}px</label>
+                    <input id="elH" type="range" min="16" max="260" step="2" value={selected.height} onChange={(e) => updateEl(selected.id, { height: Number(e.target.value) })} />
+                  </>
+                ) : null}
+                <label className="login-label" htmlFor="elOpacity" style={{ marginTop: 8 }}>Transparency: {Math.round((selected.opacity ?? 1) * 100)}% solid</label>
+                <input id="elOpacity" type="range" min="0.1" max="1" step="0.05" value={selected.opacity ?? 1} onChange={(e) => updateEl(selected.id, { opacity: Number(e.target.value) })} />
+                <p className="muted">Tip: lower it for a signature or stamp so it blends like a real one.</p>
+                <div className="form-grid" style={{ marginTop: 8 }}>
+                  <div>
+                    <label className="login-label" htmlFor="elX">Left (X): {selected.x}</label>
+                    <input id="elX" className="input" type="number" min="0" max={CARD_W} value={selected.x} onChange={(e) => updateEl(selected.id, { x: clamp(Number(e.target.value), 0, CARD_W, selected.x) })} />
+                  </div>
+                  <div>
+                    <label className="login-label" htmlFor="elY">Top (Y): {selected.y}</label>
+                    <input id="elY" className="input" type="number" min="0" max={CARD_H} value={selected.y} onChange={(e) => updateEl(selected.id, { y: clamp(Number(e.target.value), 0, CARD_H, selected.y) })} />
+                  </div>
+                </div>
+                <div className="btn-row" style={{ marginTop: 8, flexWrap: 'wrap' }}>
+                  <button type="button" className={`tab-btn ${selected.locked ? 'active' : ''}`} onClick={() => updateEl(selected.id, { locked: !selected.locked })} title="Lock its position so a stray click can't move it">
+                    {selected.locked ? '🔒 Locked' : '🔓 Unlocked'}
+                  </button>
+                  <button type="button" className="tab-btn" onClick={() => duplicateEl(selected.id)} title="Make a copy of this item">Duplicate</button>
+                  <button type="button" className="tab-btn" onClick={() => stackEl(selected.id, 'front')} title="Bring on top of other items">Bring to front</button>
+                  <button type="button" className="tab-btn" onClick={() => stackEl(selected.id, 'back')} title="Send behind other items">Send to back</button>
+                </div>
                 <div className="form-actions" style={{ marginTop: 8 }}>
                   <button type="button" className="btn btn-ghost btn-sm" onClick={() => removeEl(selected.id)}>Delete this item</button>
                 </div>
@@ -360,10 +428,12 @@ export default function IdCardDesigner() {
                 <div
                   key={el.id}
                   className={`idcard-el ${el.type === 'image' ? 'is-image' : ''} ${selectedId === el.id ? 'selected' : ''}`}
-                  style={{ left: el.x, top: el.y, width: el.width, minHeight: el.height, transform: `rotate(${el.rotation || 0}deg)`, color: el.color, fontSize: el.fontSize, fontWeight: el.fontWeight, textAlign: el.align }}
+                  style={{ left: el.x, top: el.y, width: el.width, minHeight: el.height, transform: `rotate(${el.rotation || 0}deg)`, color: el.color, fontSize: el.fontSize, fontWeight: el.fontWeight, fontFamily: (FONT_FAMILIES[el.fontFamily] || FONT_FAMILIES.sans).css, textAlign: el.align }}
                   onPointerDown={(e) => onPointerDown(e, el)}
                 >
-                  {el.type === 'image' ? <img src={el.src} alt="" draggable={false} /> : el.text}
+                  {el.type === 'image'
+                    ? <img src={el.src} alt="" draggable={false} style={{ opacity: el.opacity ?? 1 }} />
+                    : <span style={{ opacity: el.opacity ?? 1 }}>{el.text}</span>}
                 </div>
               ))}
             </div>
