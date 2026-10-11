@@ -13,6 +13,27 @@ const baseURL =
   (import.meta.env.API_BASE_URL || '').replace(/\/$/, '') || '';
 const api = axios.create({ baseURL, withCredentials: true });
 
+// --- frontend API debug logging ----------------------------------------
+// Prints every request's resolved URL + result so a wrong baseURL (the usual
+// cause of a deploy-only 404) is obvious in the browser console. Gated on dev
+// mode or a ?debug=1 query so it stays quiet in normal production use.
+const DEBUG_API =
+  import.meta.env.DEV ||
+  (typeof window !== 'undefined' && /[?&]debug=1/.test(window.location.search));
+if (DEBUG_API) {
+  // eslint-disable-next-line no-console
+  console.info('[api] baseURL =', baseURL || '(same-origin /api)');
+}
+api.interceptors.request.use((config) => {
+  if (DEBUG_API) {
+    const full = `${config.baseURL || window.location.origin}${config.url}`;
+    // eslint-disable-next-line no-console
+    console.info(`[api] -> ${String(config.method || 'get').toUpperCase()} ${full}`);
+  }
+  return config;
+});
+
+
 // ngrok's free tier serves an interstitial "You are about to visit" page to
 // browser requests, which would hijack the API calls when the dashboard is
 // opened through a tunnel. This header tells the ngrok edge to let requests
@@ -20,8 +41,21 @@ const api = axios.create({ baseURL, withCredentials: true });
 api.defaults.headers.common['ngrok-skip-browser-warning'] = 'true';
 
 api.interceptors.response.use(
-  (response) => response,
+  (response) => {
+    if (DEBUG_API) {
+      const url = `${response.config.baseURL || window.location.origin}${response.config.url}`;
+      // eslint-disable-next-line no-console
+      console.info(`[api] <- ${response.status} ${url}`);
+    }
+    return response;
+  },
   (error) => {
+    if (DEBUG_API) {
+      const url = `${error.config?.baseURL || window.location.origin}${error.config?.url || ''}`;
+      const status = error.response ? error.response.status : 'NO RESPONSE';
+      // eslint-disable-next-line no-console
+      console.warn(`[api] <- ${status} ${url}`, error.message);
+    }
     if (error.response && error.response.status === 401) {
       // Legacy JWT leftovers are wiped too (cleanup for tabs from before the
       // session-cookie migration).

@@ -22,7 +22,12 @@ export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '');
   const target = env.PROXY_TARGET || 'http://localhost:5000';
   // Only value the browser bundle needs, injected as a plain (non-VITE_) var.
-  const apiBaseUrl = env.API_BASE_URL || '';
+  // Vercel/Render set API_BASE_URL in the dashboard (process.env) but there is
+  // no .env file there — and Vite's loadEnv does NOT read process.env keys that
+  // aren't in an env file. So we check BOTH: the loaded .env value first, then
+  // the process.env value. Missing this fallback is why the deploy called the
+  // wrong (same-origin) URL and got 404.
+  const apiBaseUrl = env.API_BASE_URL || process.env.API_BASE_URL || '';
 
   // Host header allow-list (Vite's DNS-rebinding protection): any request
   // whose Host is not in this list is refused. Free-plan ngrok URLs rotate
