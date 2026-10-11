@@ -6,15 +6,23 @@ import react from '@vitejs/plugin-react';
  *
  * The proxy forwards the API to the Express backend. Its port MUST match PORT
  * in backend/.env (5000 by default) - point it elsewhere with
- * VITE_PROXY_TARGET=http://localhost:5002 in frontend/.env when needed.
+ * PROXY_TARGET=http://localhost:5002 in frontend/.env when needed.
  *
  * Tunnelling (ngrok): expose the dev server with `ngrok http 5173`. Tunnel
  * hostnames must be listed in server.allowedHosts below, otherwise Vite
  * answers "Blocked request. This host is not allowed".
+ *
+ * NOTE ON ENV NAMES: this project intentionally does NOT use the VITE_ prefix.
+ * Only VITE_* vars are auto-exposed to the browser, and that prefix caused
+ * build/deploy friction on the hosting provider. So we use plain names
+ * (API_BASE_URL, PROXY_TARGET, HMR_TUNNEL) and inject the one value the client
+ * bundle needs (API_BASE_URL) through `define` below.
  */
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '');
-  const target = env.VITE_PROXY_TARGET || 'http://localhost:5000';
+  const target = env.PROXY_TARGET || 'http://localhost:5000';
+  // Only value the browser bundle needs, injected as a plain (non-VITE_) var.
+  const apiBaseUrl = env.API_BASE_URL || '';
 
   // Host header allow-list (Vite's DNS-rebinding protection): any request
   // whose Host is not in this list is refused. Free-plan ngrok URLs rotate
@@ -29,6 +37,11 @@ export default defineConfig(({ mode }) => {
 
   return {
     plugins: [react()],
+    // Expose the plain (non-VITE_) API_BASE_URL to the browser bundle. We read
+    // it back in services/api.js via import.meta.env.API_BASE_URL.
+    define: {
+      'import.meta.env.API_BASE_URL': JSON.stringify(apiBaseUrl),
+    },
     server: {
       port: 5173,
       // Listen on all interfaces so the ngrok agent (or other devices on the
@@ -36,9 +49,9 @@ export default defineConfig(({ mode }) => {
       host: true,
       allowedHosts: tunnelHosts,
       // HMR websocket port as seen by the BROWSER. Behind an https tunnel the
-      // page is served on port 443 - set VITE_HMR_TUNNEL=1 in frontend/.env
+      // page is served on port 443 - set HMR_TUNNEL=1 in frontend/.env
       // while tunnelling and remove it again for local development.
-      ...(env.VITE_HMR_TUNNEL === '1' ? { hmr: { clientPort: 443 } } : {}),
+      ...(env.HMR_TUNNEL === '1' ? { hmr: { clientPort: 443 } } : {}),
       proxy: {
         // REST API
         '/api': { target, changeOrigin: true },

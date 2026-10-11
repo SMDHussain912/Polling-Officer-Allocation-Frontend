@@ -83,31 +83,6 @@ export function AuthProvider({ children }) {
     [persist]
   );
 
-  const loginWithGoogle = useCallback(async () => {
-    // Lazy-import so the Firebase SDK stays out of the main bundle.
-    const firebase = await import('../services/firebase');
-    try {
-      const result = await firebase.signInWithGoogle();
-      const idToken = await result.user.getIdToken();
-      const { data } = await api.post('/api/auth/google', { idToken });
-      // The server has verified the token + email allowlist and set the
-      // HttpOnly session cookie; we only cache the public user snapshot.
-      persist(data.user);
-      setBootstrapChecked(true);
-      return data.user;
-    } catch (err) {
-      // A declined/failed attempt must not leave the popup account cached,
-      // otherwise the next attempt silently reuses the rejected identity.
-      try {
-        const { signOut } = await import('firebase/auth');
-        await signOut(firebase.auth);
-      } catch {
-        /* signOut failure is irrelevant here */
-      }
-      throw err;
-    }
-  }, [persist]);
-
   const logout = useCallback(() => {
     // Destroy the server-side session BEFORE wiping local state. Fire-and-
     // forget: an offline logout still clears local state.
@@ -124,7 +99,6 @@ export function AuthProvider({ children }) {
     isBootstrapMode: false,
     bootstrapChecked: true,
     login,
-    loginWithGoogle,
     logout,
     role: user?.role,
     roleLabel: user ? roleLabel(user.role) : '',

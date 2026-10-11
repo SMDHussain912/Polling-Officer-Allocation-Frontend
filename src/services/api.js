@@ -2,14 +2,15 @@ import axios from 'axios';
 
 /**
  * Central Axios instance.
- * - Uses VITE_API_BASE_URL when set, otherwise the dev proxy (same origin /api).
+ * - Uses API_BASE_URL when set (injected from frontend/.env via vite define),
+ *   otherwise the dev proxy (same origin /api).
  * - Auth rides on the HttpOnly session cookie: withCredentials covers both the
  *   same-origin dev proxy and a direct cross-origin base URL.
  * - On a 401 response the cached user is cleared and the user is sent to login.
  */
 
 const baseURL =
-  (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '') || '';
+  (import.meta.env.API_BASE_URL || '').replace(/\/$/, '') || '';
 const api = axios.create({ baseURL, withCredentials: true });
 
 // ngrok's free tier serves an interstitial "You are about to visit" page to
